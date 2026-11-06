@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'pair_link.dart';
+import 'scan_page.dart';
 import 'sms_analysis.dart';
 
 void main() => runApp(const UnivaPaymentApp());
@@ -102,14 +104,52 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _ => 'সমস্যা হয়েছে: $code',
       };
 
-  Future<void> _pair() => _run(() async {
+  Future<void> _pairWith(String url, String code) => _run(() async {
         await _channel.invokeMethod<void>('requestPermissions');
-        await _channel.invokeMethod<void>('pair', {
-          'url': _server.text.trim(),
-          'code': _code.text.trim(),
-        });
+        await _channel.invokeMethod<void>('pair', {'url': url, 'code': code});
         _code.clear();
       });
+
+  /// The code box also accepts the whole link from the QR.
+  Future<void> _pairManually() async {
+    final entered = _code.text.trim();
+    final link = entered.startsWith('univapayment:') ? _parse(entered) : null;
+    if (entered.startsWith('univapayment:') && link == null) {
+      setState(() => _error = _badQr);
+      return;
+    }
+    await _pairWith(link?.serverUrl ?? _server.text.trim(), link?.code ?? entered);
+  }
+
+  static const _badQr = 'এই QR UnivaPayment-এর নয়। ড্যাশবোর্ডের QR স্ক্যান করুন, অথবা কোড দিয়ে যুক্ত করুন।';
+
+  PairLink? _parse(String raw) =>
+      parsePairLink(raw, allowHttp: kDebugMode, pinnedServer: _defaultServer);
+
+  Future<void> _scanQr() async {
+    final raw = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => const ScanPage()),
+    );
+    if (raw == null || !mounted) return;
+    final link = _parse(raw);
+    if (link == null) {
+      setState(() => _error = _badQr);
+      return;
+    }
+    // A QR can come from anyone, so show where the SMS would go.
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('এই সার্ভারে যুক্ত করবেন?'),
+        content: Text('আপনার bKash ও Nagad SMS এই ঠিকানায় পাঠানো হবে:\n\n${link.host}'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('না')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('যুক্ত করুন')),
+        ],
+      ),
+    );
+    if (confirmed == true) await _pairWith(link.serverUrl, link.code);
+  }
 
   Future<void> _scan() => _run(() async {
         final rows = await _channel.invokeListMethod<Map<Object?, Object?>>('scanInbox', {'limit': 500}) ?? const [];
@@ -173,24 +213,43 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           children: [
             Text('এই ফোনটা যুক্ত করুন', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 4),
-            const Text('ড্যাশবোর্ডের "ফোন" পেজ থেকে কোড নিন। অ্যাপ শুধু bKash ও Nagad-এর SMS পড়ে।'),
+            const Text('ড্যাশবোর্ডের "ফোন" পেজে QR তৈরি করে স্ক্যান করুন। অ্যাপ শুধু bKash ও Nagad-এর SMS, আর Sandbox-এর টেস্ট SMS পড়ে।'),
             const SizedBox(height: 12),
-            TextField(
-              key: const Key('code'),
-              controller: _code,
-              decoration: const InputDecoration(labelText: 'পেয়ারিং কোড', border: OutlineInputBorder()),
+            FilledButton.icon(
+              key: const Key('scan'),
+              onPressed: _busy ? null : _scanQr,
+              icon: const Icon(Icons.qr_code_scanner),
+              label: Text(_busy ? 'যুক্ত হচ্ছে…' : 'QR স্ক্যান করুন'),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              key: const Key('server'),
-              controller: _server,
-              keyboardType: TextInputType.url,
-              decoration: const InputDecoration(labelText: 'সার্ভারের ঠিকানা', border: OutlineInputBorder()),
-            ),
-            const SizedBox(height: 12),
-            FilledButton(
-              onPressed: _busy ? null : _pair,
-              child: Text(_busy ? 'যুক্ত হচ্ছে…' : 'যুক্ত করুন'),
+            const SizedBox(height: 8),
+            ExpansionTile(
+              key: const Key('manual'),
+              tilePadding: EdgeInsets.zero,
+              title: const Text('কোড দিয়ে যুক্ত করুন'),
+              subtitle: const Text('QR কাজ না করলে'),
+              childrenPadding: const EdgeInsets.only(bottom: 4),
+              children: [
+                TextField(
+                  key: const Key('code'),
+                  controller: _code,
+                  decoration: const InputDecoration(labelText: 'পেয়ারিং কোড', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  key: const Key('server'),
+                  controller: _server,
+                  keyboardType: TextInputType.url,
+                  decoration: const InputDecoration(labelText: 'সার্ভারের ঠিকানা', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: _busy ? null : _pairManually,
+                    child: const Text('যুক্ত করুন'),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
