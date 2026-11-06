@@ -113,9 +113,10 @@ object ApiClient {
         )?.use { c ->
             while (c.moveToNext()) {
                 val sender = c.getString(0)
-                if (!SmsFilter.isAllowed(sender)) continue
+                val body = c.getString(1).orEmpty()
+                if (!SmsFilter.isAllowed(sender, body)) continue
                 val sentAt = c.getLong(3).takeIf { it > 0 } ?: c.getLong(2)
-                store.add(sender, c.getString(1).orEmpty(), sentAt)
+                store.add(sender ?: "unknown", body, sentAt)
             }
         }
     }

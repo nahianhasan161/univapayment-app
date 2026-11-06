@@ -9,9 +9,17 @@ import java.security.MessageDigest
 object SmsFilter {
     private val allowedSenders = setOf("bkash", "nagad")
 
-    /** Every other SMS is ignored, never stored and never sent. */
-    fun isAllowed(sender: String?): Boolean =
+    private val testMessage = Regex("^\\s*UnivaPayment TEST [0-9A-Fa-f]{6}\\s*$", RegexOption.IGNORE_CASE)
+
+    fun isPaymentSender(sender: String?): Boolean =
         sender != null && sender.trim().lowercase() in allowedSenders
+
+    /** Sandbox SMS come from any number, so they are recognised by their exact text. */
+    fun isTestMessage(body: String): Boolean = testMessage.matches(body)
+
+    /** Every other SMS is ignored, never stored and never sent. */
+    fun isAllowed(sender: String?, body: String): Boolean =
+        isPaymentSender(sender) || isTestMessage(body)
 
     /** The same SMS gets the same id from the receiver and the inbox scan. */
     fun smsId(sender: String, body: String, sentAt: Long): String =

@@ -120,7 +120,7 @@ class MainActivity : FlutterActivity() {
         )?.use { c ->
             while (c.moveToNext() && rows.size < limit) {
                 val sender = c.getString(0)
-                if (!SmsFilter.isAllowed(sender)) continue
+                if (!SmsFilter.isPaymentSender(sender)) continue
                 rows += mapOf("sender" to sender.trim(), "body" to (c.getString(1) ?: ""))
             }
         }

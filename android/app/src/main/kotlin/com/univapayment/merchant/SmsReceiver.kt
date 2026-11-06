@@ -14,15 +14,15 @@ class SmsReceiver : BroadcastReceiver() {
         val parts = Telephony.Sms.Intents.getMessagesFromIntent(intent) ?: return
         val first = parts.firstOrNull() ?: return
         val sender = first.originatingAddress
-        if (!SmsFilter.isAllowed(sender)) return
-        if (!DeviceSession(context).isPaired) return
-
         // A long SMS arrives in several parts.
         val body = parts.joinToString("") { it.messageBody.orEmpty() }
+        if (!SmsFilter.isAllowed(sender, body)) return
+        if (!DeviceSession(context).isPaired) return
+
         val pending = goAsync()
         thread {
             try {
-                SmsStore(context).use { it.add(sender!!, body, first.timestampMillis) }
+                SmsStore(context).use { it.add(sender ?: "unknown", body, first.timestampMillis) }
                 // Try right away, so the customer's wait is short; fall back to the worker.
                 runCatching { ApiClient.sync(context) }
                     .onFailure { SyncWorker.enqueueNow(context) }
