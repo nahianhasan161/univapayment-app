@@ -1,37 +1,53 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'sms_analysis.dart';
 
-void main() => runApp(const SmsProbeApp());
+void main() => runApp(const UnivaPaymentApp());
 
-const _channel = MethodChannel('sms_probe');
+const _channel = MethodChannel('univapayment/device');
 
-class SmsProbeApp extends StatelessWidget {
-  const SmsProbeApp({super.key});
+/// Set for a real build with --dart-define=API_URL=https://your-domain.
+const _defaultServer = String.fromEnvironment(
+  'API_URL',
+  defaultValue: kDebugMode ? 'http://10.0.2.2:3000' : '',
+);
+
+const _brand = Color(0xFF0F766E);
+
+class UnivaPaymentApp extends StatelessWidget {
+  const UnivaPaymentApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'SMS Probe',
-      theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
-      home: const ProbePage(),
+      title: 'UnivaPayment',
+      theme: ThemeData(colorSchemeSeed: _brand, useMaterial3: true),
+      home: const HomePage(),
     );
   }
 }
 
-class ProbePage extends StatefulWidget {
-  const ProbePage({super.key});
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
 
   @override
-  State<ProbePage> createState() => _ProbePageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
-class _ProbePageState extends State<ProbePage> with WidgetsBindingObserver {
-  bool _permitted = false;
-  bool _scanning = false;
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
+  final _code = TextEditingController();
+  final _server = TextEditingController(text: _defaultServer);
+
+  Map<Object?, Object?> _status = const {};
+  List<Map<Object?, Object?>> _recent = const [];
   SmsReport? _report;
-  List<Map<Object?, Object?>> _captured = const [];
+  bool _busy = false;
+  String? _error;
+
+  bool get _permitted => _status['permitted'] == true;
+  bool get _paired => _status['paired'] == true;
 
   @override
   void initState() {
@@ -43,6 +59,8 @@ class _ProbePageState extends State<ProbePage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _code.dispose();
+    _server.dispose();
     super.dispose();
   }
 
@@ -52,117 +70,255 @@ class _ProbePageState extends State<ProbePage> with WidgetsBindingObserver {
   }
 
   Future<void> _refresh() async {
-    final permitted = await _channel.invokeMethod<bool>('hasPermissions') ?? false;
-    final captured = await _channel.invokeListMethod<Map<Object?, Object?>>('captured') ?? const [];
+    final status = await _channel.invokeMapMethod<Object?, Object?>('status') ?? const {};
+    final recent = await _channel.invokeListMethod<Map<Object?, Object?>>('recent') ?? const [];
     if (!mounted) return;
     setState(() {
-      _permitted = permitted;
-      _captured = captured;
+      _status = status;
+      _recent = recent;
     });
   }
 
-  Future<void> _requestPermission() async {
-    await _channel.invokeMethod<bool>('requestPermissions');
-    await _refresh();
-  }
-
-  Future<void> _scan() async {
-    setState(() => _scanning = true);
+  Future<void> _run(Future<void> Function() work) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     try {
-      final rows = await _channel.invokeListMethod<Map<Object?, Object?>>(
-            'scanInbox',
-            {'limit': 500},
-          ) ??
-          const [];
-      final report = analyze([
-        for (final r in rows)
-          (sender: r['sender']! as String, body: r['body']! as String),
-      ]);
-      if (mounted) setState(() => _report = report);
+      await work();
     } on PlatformException catch (e) {
-      _toast(e.message ?? 'Scan failed');
+      if (mounted) setState(() => _error = _describe(e.code));
     } finally {
-      if (mounted) setState(() => _scanning = false);
+      if (mounted) setState(() => _busy = false);
+      await _refresh();
     }
   }
 
+  String _describe(String code) => switch (code) {
+        'invalid_code' => 'কোডটা ভুল বা মেয়াদ শেষ। ড্যাশবোর্ড থেকে নতুন কোড নিন।',
+        'rate_limited' => 'অনেকবার চেষ্টা হয়েছে। কয়েক মিনিট পর আবার চেষ্টা করুন।',
+        'invalid_token' => 'এই ফোনটা বাতিল করা হয়েছে। আবার যুক্ত করুন।',
+        'network' => 'সার্ভারে পৌঁছানো যায়নি। নেট ও সার্ভারের ঠিকানা দেখুন।',
+        _ => 'সমস্যা হয়েছে: $code',
+      };
+
+  Future<void> _pair() => _run(() async {
+        await _channel.invokeMethod<void>('requestPermissions');
+        await _channel.invokeMethod<void>('pair', {
+          'url': _server.text.trim(),
+          'code': _code.text.trim(),
+        });
+        _code.clear();
+      });
+
+  Future<void> _scan() => _run(() async {
+        final rows = await _channel.invokeListMethod<Map<Object?, Object?>>('scanInbox', {'limit': 500}) ?? const [];
+        final report = analyze([
+          for (final r in rows) (sender: r['sender']! as String, body: r['body']! as String),
+        ]);
+        if (mounted) setState(() => _report = report);
+      });
+
   Future<void> _copyReport() async {
     await Clipboard.setData(ClipboardData(text: _report!.toShareableText()));
-    _toast('মাস্ক করা রিপোর্ট কপি হয়েছে');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('মাস্ক করা রিপোর্ট কপি হয়েছে')),
+    );
   }
-
-  void _toast(String message) => ScaffoldMessenger.of(context)
-      .showSnackBar(SnackBar(content: Text(message)));
 
   @override
   Widget build(BuildContext context) {
-    final report = _report;
     return Scaffold(
-      appBar: AppBar(title: const Text('SMS Probe')),
-      body: RefreshIndicator(
-        onRefresh: _refresh,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            const Text(
-              'এই অ্যাপ শুধু bKash ও Nagad-এর SMS পড়ে। কিছুই ফোনের বাইরে যায় না।',
-            ),
-            const SizedBox(height: 16),
-            if (!_permitted)
-              FilledButton(
-                onPressed: _requestPermission,
-                child: const Text('SMS পড়ার অনুমতি দিন'),
-              )
-            else
-              FilledButton(
-                onPressed: _scanning ? null : _scan,
-                child: Text(_scanning ? 'স্ক্যান হচ্ছে…' : 'পুরোনো SMS পরীক্ষা করুন'),
-              ),
-            const SizedBox(height: 8),
-            OutlinedButton(
-              onPressed: () => _channel.invokeMethod<void>('openBatterySettings'),
-              child: const Text('ব্যাটারি সেটিংস খুলুন'),
-            ),
-            if (report != null) ...[
-              const SizedBox(height: 24),
-              Text('ফলাফল: ${report.total}টা SMS',
-                  style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 8),
-              Text('টাকা আসার SMS-এ পুরো নম্বর: ${report.incomingWith(NumberVisibility.full)}'),
-              Text('টাকা আসার SMS-এ আংশিক নম্বর: ${report.incomingWith(NumberVisibility.partial)}'),
-              Text('টাকা আসার SMS-এ নম্বর নেই: ${report.incomingWith(NumberVisibility.none)}'),
-              const SizedBox(height: 8),
-              FilledButton.tonal(
-                onPressed: _copyReport,
-                child: const Text('মাস্ক করা রিপোর্ট কপি করুন'),
-              ),
-              for (final t in report.templates)
-                Card(
-                  child: ListTile(
-                    title: Text('${t.sender} ×${t.count} · নম্বর: ${t.visibility.name}'),
-                    subtitle: Text(t.sample),
+      body: SafeArea(
+        child: RefreshIndicator(
+          onRefresh: _refresh,
+          child: ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              Row(
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.asset('assets/logo.png', width: 44, height: 44),
                   ),
-                ),
-            ],
-            const SizedBox(height: 24),
-            Text('নতুন ধরা SMS: ${_captured.length}টা',
-                style: Theme.of(context).textTheme.titleMedium),
-            const Text('অ্যাপ বন্ধ রেখে টাকা পাঠিয়ে দেখুন, তারপর এখানে ফিরে আসুন।'),
-            for (final c in _captured)
-              Card(
-                child: ListTile(
-                  title: Text('${c['sender']} · ${_lag(c)}'),
-                  subtitle: Text(maskSms(c['body']! as String)),
-                ),
+                  const SizedBox(width: 12),
+                  const Text('UnivaPayment', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+                ],
               ),
+              const SizedBox(height: 20),
+              if (_error != null) ...[
+                Card(
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  child: Padding(padding: const EdgeInsets.all(12), child: Text(_error!)),
+                ),
+                const SizedBox(height: 8),
+              ],
+              if (_paired) _connected(context) else _pairing(context),
+              const SizedBox(height: 24),
+              _reportSection(context),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _pairing(BuildContext context) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('এই ফোনটা যুক্ত করুন', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 4),
+            const Text('ড্যাশবোর্ডের "ফোন" পেজ থেকে কোড নিন। অ্যাপ শুধু bKash ও Nagad-এর SMS পড়ে।'),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('code'),
+              controller: _code,
+              decoration: const InputDecoration(labelText: 'পেয়ারিং কোড', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const Key('server'),
+              controller: _server,
+              keyboardType: TextInputType.url,
+              decoration: const InputDecoration(labelText: 'সার্ভারের ঠিকানা', border: OutlineInputBorder()),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              onPressed: _busy ? null : _pair,
+              child: Text(_busy ? 'যুক্ত হচ্ছে…' : 'যুক্ত করুন'),
+            ),
           ],
         ),
       ),
     );
   }
 
-  String _lag(Map<Object?, Object?> c) {
-    final lag = (c['capturedAt']! as int) - (c['smsTime']! as int);
-    return '${(lag / 1000).toStringAsFixed(1)} সেকেন্ড পরে ধরা';
+  Widget _connected(BuildContext context) {
+    final revoked = _status['revoked'] == true;
+    final lastError = _status['lastError'] as String?;
+    final lastSync = _status['lastSyncAt'] as int? ?? 0;
+    final healthy = !revoked && lastError == null && _permitted;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(healthy ? Icons.check_circle : Icons.error, color: healthy ? _brand : Colors.orange),
+                    const SizedBox(width: 8),
+                    Text(
+                      revoked
+                          ? 'ফোনটা বাতিল করা হয়েছে'
+                          : !_permitted
+                              ? 'SMS অনুমতি দরকার'
+                              : lastError != null
+                                  ? 'সার্ভারে পাঠানো যাচ্ছে না'
+                                  : 'যুক্ত আছে, স্বয়ংক্রিয় চলছে',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text('সার্ভারে পাঠানো: ${_status['sent'] ?? 0}টা SMS'),
+                Text('পাঠানোর অপেক্ষায়: ${_status['unsent'] ?? 0}টা SMS'),
+                Text('শেষ যোগাযোগ: ${lastSync == 0 ? '-' : _time(lastSync)}'),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        if (!_permitted)
+          FilledButton(
+            onPressed: () => _run(() async => _channel.invokeMethod<void>('requestPermissions')),
+            child: const Text('SMS পড়ার অনুমতি দিন'),
+          ),
+        if (revoked)
+          FilledButton(
+            onPressed: () => _run(() async => _channel.invokeMethod<void>('unpair')),
+            child: const Text('আবার যুক্ত করুন'),
+          )
+        else
+          OutlinedButton(
+            onPressed: _busy ? null : () => _run(() async => _channel.invokeMethod<void>('syncNow')),
+            child: const Text('এখনই পাঠান'),
+          ),
+        OutlinedButton(
+          onPressed: () => _channel.invokeMethod<void>('openBatterySettings'),
+          child: const Text('ব্যাটারি সেটিংস খুলুন'),
+        ),
+        const Padding(
+          padding: EdgeInsets.only(top: 8),
+          child: Text(
+            'অ্যাপকে battery optimization থেকে বাদ দিন, আর Force stop করবেন না। নইলে SMS দেরিতে পৌঁছাতে পারে।',
+            style: TextStyle(fontSize: 13),
+          ),
+        ),
+        if (_recent.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Text('সর্বশেষ SMS', style: Theme.of(context).textTheme.titleMedium),
+          for (final r in _recent)
+            Card(
+              child: ListTile(
+                title: Text('${r['sender']} · ${r['sentAt'] == null ? 'অপেক্ষায়' : 'পাঠানো হয়েছে'}'),
+                subtitle: Text(maskSms(r['body']! as String)),
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+
+  Widget _reportSection(BuildContext context) {
+    final report = _report;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('SMS ফরম্যাট রিপোর্ট', style: Theme.of(context).textTheme.titleMedium),
+        const Text('পুরোনো SMS-এর ফরম্যাট দেখে মাস্ক করা রিপোর্ট বানায়। আপনি কপি না করলে এটা ফোনের বাইরে যায় না।'),
+        const SizedBox(height: 8),
+        if (!_permitted)
+          OutlinedButton(
+            onPressed: () => _run(() async => _channel.invokeMethod<void>('requestPermissions')),
+            child: const Text('SMS পড়ার অনুমতি দিন'),
+          )
+        else
+          OutlinedButton(
+            onPressed: _busy ? null : _scan,
+            child: const Text('পুরোনো SMS পরীক্ষা করুন'),
+          ),
+        if (report != null) ...[
+          const SizedBox(height: 12),
+          Text('মোট: ${report.total}টা SMS'),
+          Text('টাকা আসার SMS-এ পুরো নম্বর: ${report.incomingWith(NumberVisibility.full)}'),
+          Text('টাকা আসার SMS-এ আংশিক নম্বর: ${report.incomingWith(NumberVisibility.partial)}'),
+          Text('টাকা আসার SMS-এ নম্বর নেই: ${report.incomingWith(NumberVisibility.none)}'),
+          const SizedBox(height: 8),
+          FilledButton.tonal(onPressed: _copyReport, child: const Text('মাস্ক করা রিপোর্ট কপি করুন')),
+          for (final t in report.templates)
+            Card(
+              child: ListTile(
+                title: Text('${t.sender} ×${t.count} · নম্বর: ${t.visibility.name}'),
+                subtitle: Text(t.sample),
+              ),
+            ),
+        ],
+      ],
+    );
+  }
+
+  String _time(int millis) {
+    final t = DateTime.fromMillisecondsSinceEpoch(millis);
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${two(t.day)}/${two(t.month)} ${two(t.hour)}:${two(t.minute)}';
   }
 }

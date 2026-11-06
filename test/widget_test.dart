@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:mfs_merchant_app/sms_analysis.dart';
+import 'package:univapayment_app/sms_analysis.dart';
 
 // Made-up values; only the shape of the message matters here.
 const incoming =
