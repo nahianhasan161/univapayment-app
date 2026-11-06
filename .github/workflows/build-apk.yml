@@ -66,8 +66,10 @@ jobs:
           TAG="build-$GITHUB_RUN_NUMBER"
           SHORT_SHA="${GITHUB_SHA::7}"
           printf 'Built from %s.\n\n%s\n' "$GITHUB_SHA" "${COMMIT_MESSAGE:-Manual run}" > notes.txt
-          gh release create "$TAG" "$APK" --target "$GITHUB_SHA" \
-            --title "Build $GITHUB_RUN_NUMBER ($SHORT_SHA)" --notes-file notes.txt --prerelease
+          # A second copy with a fixed name, so the website can always link to the latest build.
+          cp "$APK" UnivaPayment.apk
+          gh release create "$TAG" "$APK" UnivaPayment.apk --target "$GITHUB_SHA" \
+            --title "Build $GITHUB_RUN_NUMBER ($SHORT_SHA)" --notes-file notes.txt --latest
           LINK="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$APK"
           gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/comments" -f body="[Download APK]($LINK) (build $GITHUB_RUN_NUMBER)"
           echo "### [Download APK]($LINK)" >> "$GITHUB_STEP_SUMMARY"
