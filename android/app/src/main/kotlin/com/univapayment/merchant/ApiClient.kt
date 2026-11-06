@@ -20,15 +20,22 @@ object ApiClient {
     private val lock = Any()
 
     private fun post(url: String, body: JSONObject, token: String? = null): JSONObject {
+        val text = call("POST", url, body.toString(), token)
+        return if (text.isBlank()) JSONObject() else JSONObject(text)
+    }
+
+    private fun call(method: String, url: String, body: String?, token: String?): String {
         val connection = URL(url).openConnection() as HttpURLConnection
         try {
-            connection.requestMethod = "POST"
+            connection.requestMethod = method
             connection.connectTimeout = 10_000
             connection.readTimeout = 15_000
-            connection.doOutput = true
-            connection.setRequestProperty("Content-Type", "application/json")
             token?.let { connection.setRequestProperty("Authorization", "Bearer $it") }
-            connection.outputStream.use { it.write(body.toString().toByteArray()) }
+            if (body != null) {
+                connection.doOutput = true
+                connection.setRequestProperty("Content-Type", "application/json")
+                connection.outputStream.use { it.write(body.toByteArray()) }
+            }
 
             val status = connection.responseCode
             val stream = if (status < 400) connection.inputStream else connection.errorStream
@@ -38,9 +45,24 @@ object ApiClient {
                     .getOrDefault("http_$status")
                 throw ApiException(status, message)
             }
-            return if (text.isBlank()) JSONObject() else JSONObject(text)
+            return text
         } finally {
             connection.disconnect()
+        }
+    }
+
+    /** The app's merchant screens. The token stays on this side and only reaches device routes. */
+    fun request(context: Context, method: String, path: String, body: String?): String {
+        require(path.startsWith("/api/v1/device/")) { "not a device route" }
+        val session = DeviceSession(context)
+        val token = session.token
+        val base = session.serverUrl
+        if (token == null || base == null) throw ApiException(401, "invalid_token")
+        try {
+            return call(method, base + path, body, token)
+        } catch (e: ApiException) {
+            if (e.status == 401) session.markRevoked()
+            throw e
         }
     }
 
@@ -88,6 +110,8 @@ object ApiClient {
                     batch = store.unsent(BATCH_SIZE)
                 }
                 session.recordSync(null)
+                // A failure here must not make the SMS look unsent; the next sync tries again.
+                runCatching { Notifier.check(context) }
             } catch (e: ApiException) {
                 if (e.status == 401) session.markRevoked()
                 session.recordSync(e.message)
@@ -121,7 +145,7 @@ object ApiClient {
         }
     }
 
-    private fun iso(millis: Long): String =
+    fun iso(millis: Long): String =
         SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
             .apply { timeZone = TimeZone.getTimeZone("UTC") }
             .format(Date(millis))

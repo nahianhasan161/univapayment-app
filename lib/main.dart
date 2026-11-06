@@ -2,6 +2,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'dart:async';
+
+import 'merchant_pages.dart';
 import 'pair_link.dart';
 import 'scan_page.dart';
 import 'sms_analysis.dart';
@@ -48,6 +51,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _busy = false;
   String? _error;
 
+  int _tab = 0;
+  String? _mode;
+  Map<String, dynamic>? _overview;
+  String? _overviewError;
+  int _changes = 0;
+  bool _askedNotifications = false;
+  Timer? _timer;
+
   bool get _permitted => _status['permitted'] == true;
   bool get _paired => _status['paired'] == true;
 
@@ -56,10 +67,53 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _refresh();
+    _startTimer();
+  }
+
+  /// Keeps the numbers current while the app is on screen.
+  void _startTimer() {
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (_showsMerchantScreens) _reloadOverview(check: true);
+    });
+  }
+
+  bool get _revoked => _status['revoked'] == true;
+  bool get _showsMerchantScreens => _paired && !_revoked;
+
+  Future<void> _reloadOverview({bool check = false}) async {
+    try {
+      final data = await merchantApi.get('/api/v1/device/overview', {'mode': ?_mode});
+      if (check) await _channel.invokeMethod<void>('checkNotifications');
+      if (!mounted) return;
+      setState(() {
+        _overview = data;
+        _mode = data['mode'] as String;
+        _overviewError = null;
+      });
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      if (e.code == 'invalid_token') await _refresh();
+      if (mounted) setState(() => _overviewError = _describe(e.code));
+    }
+  }
+
+  void _changed() {
+    setState(() => _changes++);
+    _reloadOverview();
+  }
+
+  void _setMode(String mode) {
+    setState(() {
+      _mode = mode;
+      _changes++;
+    });
+    _reloadOverview();
   }
 
   @override
   void dispose() {
+    _timer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _code.dispose();
     _server.dispose();
@@ -68,7 +122,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _refresh();
+    if (state == AppLifecycleState.resumed) {
+      _refresh();
+      _startTimer();
+    } else if (state == AppLifecycleState.paused) {
+      _timer?.cancel();
+    }
   }
 
   Future<void> _refresh() async {
@@ -78,7 +137,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() {
       _status = status;
       _recent = recent;
+      if (status['openNotifications'] == true) _tab = 2;
     });
+    if (_showsMerchantScreens) {
+      _reloadOverview();
+      if (!_askedNotifications) {
+        _askedNotifications = true;
+        await _channel.invokeMethod<void>('requestNotifications');
+      }
+    }
   }
 
   Future<void> _run(Future<void> Function() work) async {
@@ -169,8 +236,47 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    if (!_showsMerchantScreens) return Scaffold(body: _phoneTab(context));
+    final mode = _mode ?? (_overview?['mode'] as String?) ?? 'test';
+    final unread = (_overview?['unread'] as num?)?.toInt() ?? 0;
     return Scaffold(
-      body: SafeArea(
+      body: IndexedStack(
+        index: _tab,
+        children: [
+          OverviewTab(
+            overview: _overview,
+            error: _overviewError,
+            onRefresh: _reloadOverview,
+            onMode: _setMode,
+            onChanged: _changed,
+          ),
+          PaymentsTab(mode: mode, changes: _changes, onChanged: _changed),
+          NotificationsTab(mode: mode, refresh: unread + _changes, onChanged: _reloadOverview),
+          _phoneTab(context),
+        ],
+      ),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: (i) => setState(() => _tab = i),
+        destinations: [
+          const NavigationDestination(icon: Icon(Icons.dashboard_outlined), label: 'সারাংশ'),
+          const NavigationDestination(icon: Icon(Icons.receipt_long_outlined), label: 'পেমেন্ট'),
+          NavigationDestination(
+            icon: Badge(
+              isLabelVisible: unread > 0,
+              label: Text(unread > 99 ? '99+' : '$unread'),
+              child: const Icon(Icons.notifications_outlined),
+            ),
+            label: 'নোটিফিকেশন',
+          ),
+          const NavigationDestination(icon: Icon(Icons.phone_android_outlined), label: 'ফোন'),
+        ],
+      ),
+    );
+  }
+
+  Widget _phoneTab(BuildContext context) {
+    return SafeArea(
         child: RefreshIndicator(
           onRefresh: _refresh,
           child: ListView(
@@ -200,7 +306,6 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
             ],
           ),
         ),
-      ),
     );
   }
 
@@ -300,6 +405,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           FilledButton(
             onPressed: () => _run(() async => _channel.invokeMethod<void>('requestPermissions')),
             child: const Text('SMS পড়ার অনুমতি দিন'),
+          ),
+        if (_status['notificationsAllowed'] == false)
+          FilledButton.tonal(
+            onPressed: () => _run(() async => _channel.invokeMethod<void>('requestNotifications')),
+            child: const Text('নোটিফিকেশন চালু করুন'),
           ),
         if (revoked)
           FilledButton(

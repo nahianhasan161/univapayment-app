@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:univapayment_app/format.dart';
 import 'package:univapayment_app/pair_link.dart';
 import 'package:univapayment_app/sms_analysis.dart';
 
@@ -8,6 +9,21 @@ const incoming =
     'Balance Tk 1,500.00. TrxID ABC123XYZ9 at 06/11/2026 10:30';
 
 void main() {
+  test('money shows grouped taka from poisha', () {
+    expect(taka(50000), '৳500.00');
+    expect(taka(123456789), '৳1,234,567.89');
+    expect(taka(5), '৳0.05');
+    expect(taka(null), '-');
+  });
+
+  test('only open payments can be approved, only completed ones refunded', () {
+    expect(actionsFor('review'), ['approve', 'reject']);
+    expect(actionsFor('pending'), ['approve', 'reject']);
+    expect(actionsFor('completed'), ['refund']);
+    expect(actionsFor('expired'), isEmpty);
+    expect(actionsFor('refunded'), isEmpty);
+  });
+
   test('finds a full, partial or missing sender number', () {
     expect(numberVisibility(incoming), NumberVisibility.full);
     expect(numberVisibility('from 017***5678'), NumberVisibility.partial);

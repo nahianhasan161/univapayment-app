@@ -20,6 +20,9 @@ class DeviceSession(context: Context) {
     val lastSyncAt: Long get() = prefs.getLong(KEY_LAST_SYNC, 0)
     val lastError: String? get() = prefs.getString(KEY_LAST_ERROR, null)
     val revoked: Boolean get() = prefs.getBoolean(KEY_REVOKED, false)
+    var notifyCursor: String?
+        get() = prefs.getString(KEY_NOTIFY_CURSOR, null)
+        set(value) = prefs.edit().putString(KEY_NOTIFY_CURSOR, value).apply()
 
     val token: String?
         get() = prefs.getString(KEY_TOKEN, null)?.let { sealed ->
@@ -40,6 +43,7 @@ class DeviceSession(context: Context) {
             .putString(KEY_TOKEN, Base64.encodeToString(sealed, Base64.NO_WRAP))
             .putLong(KEY_PAIRED_AT, System.currentTimeMillis())
             .putBoolean(KEY_REVOKED, false)
+            .putString(KEY_NOTIFY_CURSOR, ApiClient.iso(System.currentTimeMillis()))
             .remove(KEY_LAST_ERROR)
             .apply()
     }
@@ -83,5 +87,6 @@ class DeviceSession(context: Context) {
         const val KEY_LAST_SYNC = "last_sync"
         const val KEY_LAST_ERROR = "last_error"
         const val KEY_REVOKED = "revoked"
+        const val KEY_NOTIFY_CURSOR = "notify_cursor"
     }
 }
