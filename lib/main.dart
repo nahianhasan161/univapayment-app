@@ -362,6 +362,58 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
+  /// Removes this phone from its account, so it can be paired to another one.
+  Future<void> _confirmUnpair(BuildContext context) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('ফোন আলাদা করবেন?'),
+        content: const Text(
+          'এই ফোন বর্তমান অ্যাকাউন্ট থেকে সরে যাবে, তারপর অন্য অ্যাকাউন্টে যুক্ত করতে পারবেন। '
+          'পাঠানোর অপেক্ষায় থাকা SMS আগে পাঠিয়ে দেওয়া হবে।\n\n'
+          'আলাদা করার পর এই ফোনে আসা পেমেন্ট আর আগের অ্যাকাউন্টে নিজে থেকে যাচাই হবে না।',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('বাতিল')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('আলাদা করুন'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await _channel.invokeMethod<void>('unpair', {'remote': true});
+      if (mounted) setState(() => _tab = 0);
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      // No network: offer to forget the account on this phone only; it can still be removed from the dashboard.
+      final force = await showDialog<bool>(
+        context: this.context,
+        builder: (context) => AlertDialog(
+          title: const Text('সার্ভারে পৌঁছানো যায়নি'),
+          content: Text(
+            '${_describe(e.code)}\n\nতবুও এই ফোন থেকে অ্যাকাউন্ট সরাতে পারেন। তখন ড্যাশবোর্ডের "ফোন" পেজ থেকে পুরোনো ফোনটা বাতিল করে দিন।',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('থাক')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('তবুও সরান')),
+          ],
+        ),
+      );
+      if (force == true) await _channel.invokeMethod<void>('unpair');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+      await _refresh();
+    }
+  }
+
   Widget _connected(BuildContext context) {
     final revoked = _status['revoked'] == true;
     final lastError = _status['lastError'] as String?;
@@ -425,6 +477,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           onPressed: () => _channel.invokeMethod<void>('openBatterySettings'),
           child: const Text('ব্যাটারি সেটিংস খুলুন'),
         ),
+        if (!revoked)
+          TextButton.icon(
+            onPressed: _busy ? null : () => _confirmUnpair(context),
+            style: TextButton.styleFrom(foregroundColor: Colors.red.shade700),
+            icon: const Icon(Icons.logout),
+            label: const Text('অ্যাকাউন্ট থেকে ফোন আলাদা করুন'),
+          ),
         const Padding(
           padding: EdgeInsets.only(top: 8),
           child: Text(

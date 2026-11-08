@@ -66,6 +66,17 @@ object ApiClient {
         }
     }
 
+    /** Leaves the account on the server. Sends anything still waiting first, so no payment SMS is lost. */
+    fun unpair(context: Context) {
+        runCatching { sync(context) }
+        try {
+            request(context, "POST", "/api/v1/device/unpair", "{}")
+        } catch (e: ApiException) {
+            // Already removed from the dashboard: nothing left to do on the server.
+            if (e.status != 401) throw e
+        }
+    }
+
     fun pair(context: Context, serverUrl: String, code: String) {
         val base = serverUrl.trim().trimEnd('/')
         val response = post(

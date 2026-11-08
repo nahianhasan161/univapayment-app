@@ -45,10 +45,17 @@ class MainActivity : FlutterActivity() {
                         null
                     }
                     "unpair" -> {
-                        SyncWorker.cancelAll(this)
-                        DeviceSession(this).clear()
-                        SmsStore(this).use { it.clear() }
-                        result.success(null)
+                        // remote: tell the server first. Without it, only this phone forgets the account.
+                        if (call.argument<Boolean>("remote") == true) {
+                            onBackground(result) {
+                                ApiClient.unpair(this)
+                                forgetAccount()
+                                null
+                            }
+                        } else {
+                            forgetAccount()
+                            result.success(null)
+                        }
                     }
                     "scanInbox" -> {
                         if (hasPermissions()) {
@@ -74,6 +81,12 @@ class MainActivity : FlutterActivity() {
                 }
             }
         if (DeviceSession(this).isPaired) SyncWorker.schedulePeriodic(this)
+    }
+
+    private fun forgetAccount() {
+        SyncWorker.cancelAll(this)
+        DeviceSession(this).clear()
+        SmsStore(this).use { it.clear() }
     }
 
     private fun onBackground(result: MethodChannel.Result, work: () -> Any?) {
